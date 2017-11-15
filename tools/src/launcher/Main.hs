@@ -13,32 +13,33 @@
 
 import           Universum
 
-import           Control.Concurrent (modifyMVar_)
-import           Control.Concurrent.Async.Lifted.Safe (Async, async, cancel, poll, wait, waitAny,
-                                                       withAsyncWithUnmask)
-import           Control.Exception.Safe (tryAny)
-import           Control.Lens (makeLensesWith)
-import qualified Data.ByteString.Lazy as BS.L
-import           Data.List (isSuffixOf)
-import qualified Data.Text.IO as T
-import           Data.Time.Units (Second, convertUnit)
-import           Data.Version (showVersion)
-import           Formatting (int, sformat, shown, stext, (%))
-import qualified NeatInterpolation as Q (text)
-import           Options.Applicative (Mod, OptionFields, Parser, auto, execParser, footerDoc,
-                                      fullDesc, header, help, helper, info, infoOption, long,
-                                      metavar, option, progDesc, short, strOption)
-import           System.Directory (createDirectoryIfMissing, doesFileExist, getTemporaryDirectory,
-                                   removeFile)
-import           System.Environment (getExecutablePath)
-import           System.Exit (ExitCode (..))
-import           System.FilePath ((</>))
-import qualified System.IO as IO
-import           System.Process (ProcessHandle, readProcessWithExitCode)
-import qualified System.Process as Process
-import           System.Timeout (timeout)
-import           System.Wlog (logError, logInfo, logNotice, logWarning)
-import qualified System.Wlog as Log
+import           Control.Concurrent           (modifyMVar_)
+import           Control.Concurrent.Async     (Async, async, cancel, poll, wait, waitAny,
+                                               withAsyncWithUnmask, withAsync)
+import           Data.List                    (isSuffixOf)
+import           Data.Maybe                   (fromJust)
+import qualified Data.Text.IO                 as T
+import qualified Data.Text.Lazy.IO            as TL
+import           Data.Time.Units              (Second, convertUnit)
+import           Data.Version                 (showVersion)
+import           Formatting                   (format, int, shown, stext, text, (%))
+import qualified NeatInterpolation            as Q (text)
+import           Options.Applicative          (Mod, OptionFields, Parser, auto,
+                                               execParser, footerDoc, fullDesc, header,
+                                               help, helper, info, infoOption, long,
+                                               metavar, option, progDesc, short,
+                                               switch, strOption)
+import           System.Directory             (createDirectoryIfMissing, doesFileExist,
+                                               getTemporaryDirectory, removeFile)
+import           System.Environment           (getExecutablePath)
+import           System.Exit                  (ExitCode (..))
+import           System.FilePath              (normalise, (</>))
+import qualified System.IO                    as IO
+import           System.Process               (ProcessHandle, runInteractiveProcess,
+                                              readProcessWithExitCode, waitForProcess)
+import qualified System.Process               as Process
+import           System.Timeout               (timeout)
+import           System.Wlog                  (lcFilePrefix, usingLoggerName)
 import           Text.PrettyPrint.ANSI.Leijen (Doc)
 
 #ifdef mingw32_HOST_OS
@@ -80,6 +81,7 @@ data LauncherOptions = LO
     , loNodeLogPath         :: !(Maybe FilePath)
     , loWalletPath          :: !(Maybe FilePath)
     , loWalletArgs          :: ![Text]
+    , loWalletLogging       :: !Bool
     , loUpdaterPath         :: !FilePath
     , loUpdaterArgs         :: ![Text]
     , loUpdateArchive       :: !(Maybe FilePath)
@@ -133,6 +135,9 @@ optionsParser = do
         short   'w' <>
         help    "An argument to be passed to the wallet frontend executable." <>
         metavar "ARG"
+    loWalletLogging <- switch $
+        long    "wlogging" <>
+        help    "Logging flag for the launcher wallet."
 
     -- Update-related args
     loUpdaterPath <- textOption $
@@ -291,6 +296,7 @@ main =
                     , loUpdateArchive)
                     loNodeTimeoutSec
                     loReportServer
+                    loWalletLogging
   where
     -- We propagate configuration options to the node executable,
     -- because we almost certainly want to use the same configuration
@@ -362,13 +368,14 @@ clientScenario
     -- ^ Updater, args, updater runner, the update .tar
     -> Int                                 -- ^ Node timeout, in seconds
     -> Maybe String                        -- ^ Report server
+    -> Bool                                -- ^ Wallet logging
     -> M ()
-clientScenario ndbp logConf node wallet updater nodeTimeout report = do
+clientScenario ndbp logConf node wallet updater nodeTimeout report walletLog = do
     runUpdater ndbp updater
     (nodeHandle, nodeAsync) <- spawnNode node
     walletAsync <- async (runWallet wallet)
     (someAsync, exitCode) <- waitAny [nodeAsync, walletAsync]
-    let restart = clientScenario ndbp logConf node wallet updater nodeTimeout report
+    let restart = clientScenario ndbp logConf node wallet updater nodeTimeout report walletLog
     if | someAsync == nodeAsync -> do
              logWarning $ sformat ("The node has exited with "%shown) exitCode
              whenJust report $ \repServ -> do
@@ -515,11 +522,16 @@ spawnNode (path, args, mbLogPath) = do
             logInfo "Node has started"
             return (ph, asc)
 
-runWallet :: (FilePath, [Text]) -> M ExitCode
-runWallet (path, args) = do
+runWallet :: Bool -> (FilePath, [Text]) -> M ExitCode
+runWallet shouldLog (path, args) = do
     logNotice "Starting the wallet"
-    view _1 <$>
-        liftIO (readProcessWithExitCode path (map toString args) mempty)
+    if shouldLog then do
+        (_, stdO, stdE, pid) <- runInteractiveProcess path (map toString args) Nothing Nothing
+        withAsync (forever $ IO.hGetLine stdO >>= IO.hPutStrLn stdout . ("[wallet] " <>)) $ \_ ->
+            withAsync (forever $ IO.hGetLine stdE >>= IO.hPutStrLn stderr . ("[wallet err] " <>)) $ \_ -> do
+            waitForProcess pid
+    else
+       view _1 <$> readProcessWithExitCode path (map toString args) mempty
 
 ----------------------------------------------------------------------------
 -- Working with the report server
@@ -563,10 +575,14 @@ system'
     -- ^ Exit code
 system' phvar p sl = liftIO (do
     let open = do
-            (m, _, _, ph) <- Process.createProcess p
+            (m, stdO, stdE, ph) <- Process.createProcess p
             putMVar phvar ph
             case m of
-                Just hIn -> IO.hSetBuffering hIn IO.LineBuffering
+                Just hIn -> do
+                    _ <- withAsync (forever $ IO.hGetLine (fromJust stdO) >>= IO.hPutStrLn stdout . ("[node] " <>)) $ \_ ->
+                         withAsync (forever $ IO.hGetLine (fromJust stdE) >>= IO.hPutStrLn stderr . ("[node err] " <>)) $ \_ -> do
+                         waitForProcess ph
+                    IO.hSetBuffering hIn IO.LineBuffering
                 _        -> return ()
             return (m, ph)
 

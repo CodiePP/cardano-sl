@@ -148,7 +148,7 @@ while [[ $i -lt $panesCnt ]]; do
         fi
         node_args_="$(prefix_args "$node_args" "-n")"
         launcher_args=" $launcher_args --updater /usr/bin/env -u bash --update-archive $updater_file"
-        launcher_args=" $launcher_args --node-timeout 5 $node_args_ --system-start 0 "
+        launcher_args=" $launcher_args --node-timeout 5 $node_args_ --system-start 0 --wlogging"
         tmux send-keys "$launcher_ $launcher_args" C-m
     else
         echo "$node_ $node_args"
