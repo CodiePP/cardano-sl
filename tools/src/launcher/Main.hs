@@ -13,33 +13,35 @@
 
 import           Universum
 
-import           Control.Concurrent           (modifyMVar_)
-import           Control.Concurrent.Async     (Async, async, cancel, poll, wait, waitAny,
-                                               withAsyncWithUnmask, withAsync)
-import           Data.List                    (isSuffixOf)
-import           Data.Maybe                   (fromJust)
-import qualified Data.Text.IO                 as T
-import qualified Data.Text.Lazy.IO            as TL
-import           Data.Time.Units              (Second, convertUnit)
-import           Data.Version                 (showVersion)
-import           Formatting                   (format, int, shown, stext, text, (%))
-import qualified NeatInterpolation            as Q (text)
-import           Options.Applicative          (Mod, OptionFields, Parser, auto,
-                                               execParser, footerDoc, fullDesc, header,
-                                               help, helper, info, infoOption, long,
-                                               metavar, option, progDesc, short,
-                                               switch, strOption)
-import           System.Directory             (createDirectoryIfMissing, doesFileExist,
-                                               getTemporaryDirectory, removeFile)
-import           System.Environment           (getExecutablePath)
-import           System.Exit                  (ExitCode (..))
-import           System.FilePath              (normalise, (</>))
-import qualified System.IO                    as IO
-import           System.Process               (ProcessHandle, runInteractiveProcess,
-                                              readProcessWithExitCode, waitForProcess)
-import qualified System.Process               as Process
-import           System.Timeout               (timeout)
-import           System.Wlog                  (lcFilePrefix, usingLoggerName)
+import           Control.Concurrent (modifyMVar_)
+import           Control.Concurrent.Async.Lifted.Safe (Async, async, cancel, poll, wait, waitAny,
+                                                       withAsync, withAsyncWithUnmask)
+import           Control.Exception.Safe (tryAny)
+import           Control.Lens (makeLensesWith)
+import qualified Data.ByteString.Lazy as BS.L
+import           Data.List (isSuffixOf)
+import           Data.Maybe (fromJust)
+import qualified Data.Text.IO as T
+import qualified Data.Text as TXT
+import           Data.Time.Units (Second, convertUnit)
+import           Data.Version (showVersion)
+import           Formatting (int, sformat, shown, stext, (%))
+import qualified NeatInterpolation as Q (text)
+import           Options.Applicative (Mod, OptionFields, Parser, auto, execParser, footerDoc,
+                                      fullDesc, header, help, helper, info, infoOption, long,
+                                      metavar, option, progDesc, short, strOption, switch)
+import           System.Directory (createDirectoryIfMissing, doesFileExist, getTemporaryDirectory,
+                                   removeFile)
+import           System.Environment (getExecutablePath)
+import           System.Exit (ExitCode (..))
+import           System.FilePath ((</>))
+import qualified System.IO as IO
+import           System.Process (ProcessHandle, readProcessWithExitCode,
+                                 runInteractiveProcess, waitForProcess)
+import qualified System.Process as Process
+import           System.Timeout (timeout)
+import           System.Wlog (logError, logInfo, logNotice, logWarning)
+import qualified System.Wlog as Log
 import           Text.PrettyPrint.ANSI.Leijen (Doc)
 
 #ifdef mingw32_HOST_OS
@@ -527,11 +529,27 @@ runWallet shouldLog (path, args) = do
     logNotice "Starting the wallet"
     if shouldLog then do
         (_, stdO, stdE, pid) <- runInteractiveProcess path (map toString args) Nothing Nothing
-        withAsync (forever $ IO.hGetLine stdO >>= IO.hPutStrLn stdout . ("[wallet] " <>)) $ \_ ->
-            withAsync (forever $ IO.hGetLine stdE >>= IO.hPutStrLn stderr . ("[wallet err] " <>)) $ \_ -> do
+        withAsync (forever $ IO.hGetLine stdO >>= \x -> walletLogger "info" x) $ \_ ->
+            withAsync (forever $ IO.hGetLine stdE >>= \x -> walletLogger "error" x) $ \_ -> do
             waitForProcess pid
     else
        view _1 <$> readProcessWithExitCode path (map toString args) mempty
+
+walletLogger :: Log.CanLog m => String -> String -> m ()
+walletLogger logType logStr = do
+    Log.usingLoggerName "wallet" $
+        case logType of
+            "notice" -> logNotice $ TXT.pack logStr
+            "error" -> logError $ TXT.pack logStr
+            _ -> logInfo $ TXT.pack logStr
+
+nodeLogger :: Log.CanLog m => String -> String -> m ()
+nodeLogger logType logStr = do
+    Log.usingLoggerName "node" $
+        case logType of
+            "notice" -> logNotice $ TXT.pack logStr
+            "error" -> logError $ TXT.pack logStr
+            _ -> logInfo $ TXT.pack logStr
 
 ----------------------------------------------------------------------------
 -- Working with the report server
@@ -573,14 +591,14 @@ system'
     -- ^ Lines of standard input
     -> io ExitCode
     -- ^ Exit code
-system' phvar p sl = liftIO (do
+system' phvar p sl = Log.usingLoggerName "node" $ liftIO (do
     let open = do
             (m, stdO, stdE, ph) <- Process.createProcess p
             putMVar phvar ph
             case m of
                 Just hIn -> do
-                    _ <- withAsync (forever $ IO.hGetLine (fromJust stdO) >>= IO.hPutStrLn stdout . ("[node] " <>)) $ \_ ->
-                         withAsync (forever $ IO.hGetLine (fromJust stdE) >>= IO.hPutStrLn stderr . ("[node err] " <>)) $ \_ -> do
+                    _ <- withAsync (forever $ IO.hGetLine (fromJust stdO) >>= \x -> nodeLogger "info" x) $ \_ ->
+                         withAsync (forever $ IO.hGetLine (fromJust stdE) >>= \x -> nodeLogger "error" x) $ \_ -> do
                          waitForProcess ph
                     IO.hSetBuffering hIn IO.LineBuffering
                 _        -> return ()
