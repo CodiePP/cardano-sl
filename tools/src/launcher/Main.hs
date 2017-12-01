@@ -22,7 +22,6 @@ import qualified Data.ByteString.Lazy as BS.L
 import           Data.List (isSuffixOf)
 import           Data.Maybe (fromJust)
 import qualified Data.Text.IO as T
-import qualified Data.Text as TXT
 import           Data.Time.Units (Second, convertUnit)
 import           Data.Version (showVersion)
 import           Formatting (int, sformat, shown, stext, (%))
@@ -529,27 +528,20 @@ runWallet shouldLog (path, args) = do
     logNotice "Starting the wallet"
     if shouldLog then do
         (_, stdO, stdE, pid) <- runInteractiveProcess path (map toString args) Nothing Nothing
-        withAsync (forever $ IO.hGetLine stdO >>= \x -> walletLogger "info" x) $ \_ ->
-            withAsync (forever $ IO.hGetLine stdE >>= \x -> walletLogger "error" x) $ \_ -> do
+        withAsync (forever $ IO.hGetLine stdO >>= customLogger "info" "wallet") $ \_ ->
+            withAsync (forever $ IO.hGetLine stdE >>= customLogger "error" "wallet") $ \_ -> do
             waitForProcess pid
     else
        view _1 <$> readProcessWithExitCode path (map toString args) mempty
 
-walletLogger :: Log.CanLog m => String -> String -> m ()
-walletLogger logType logStr = do
-    Log.usingLoggerName "wallet" $
+customLogger :: Log.CanLog m => String -> String -> String -> m ()
+customLogger logType logName logStr = do
+    Log.usingLoggerName (Log.LoggerName logName) $
         case logType of
-            "notice" -> logNotice $ TXT.pack logStr
-            "error" -> logError $ TXT.pack logStr
-            _ -> logInfo $ TXT.pack logStr
-
-nodeLogger :: Log.CanLog m => String -> String -> m ()
-nodeLogger logType logStr = do
-    Log.usingLoggerName "node" $
-        case logType of
-            "notice" -> logNotice $ TXT.pack logStr
-            "error" -> logError $ TXT.pack logStr
-            _ -> logInfo $ TXT.pack logStr
+            "notice"  -> logNotice $ toText logStr
+            "warning" -> logError  $ toText logStr
+            "error"   -> logError  $ toText logStr
+            _         -> logInfo   $ toText logStr
 
 ----------------------------------------------------------------------------
 -- Working with the report server
@@ -591,14 +583,14 @@ system'
     -- ^ Lines of standard input
     -> io ExitCode
     -- ^ Exit code
-system' phvar p sl = Log.usingLoggerName "node" $ liftIO (do
+system' phvar p sl = liftIO (do
     let open = do
             (m, stdO, stdE, ph) <- Process.createProcess p
             putMVar phvar ph
             case m of
                 Just hIn -> do
-                    _ <- withAsync (forever $ IO.hGetLine (fromJust stdO) >>= \x -> nodeLogger "info" x) $ \_ ->
-                         withAsync (forever $ IO.hGetLine (fromJust stdE) >>= \x -> nodeLogger "error" x) $ \_ -> do
+                    _ <- withAsync (forever $ IO.hGetLine (fromJust stdO) >>= customLogger "info" "node") $ \_ ->
+                         withAsync (forever $ IO.hGetLine (fromJust stdE) >>= customLogger "error" "node") $ \_ -> do
                          waitForProcess ph
                     IO.hSetBuffering hIn IO.LineBuffering
                 _        -> return ()
