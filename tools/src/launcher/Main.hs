@@ -459,11 +459,7 @@ runUpdater ndbp (path, args, runnerPath, mUpdateArchivePath) = do
 
 runUpdaterProc :: HasConfigurations => FilePath -> [Text] -> M ExitCode
 runUpdaterProc path args = liftIO $ do
-    let cr = (Process.proc (toString path) (map toString args))
-                 { Process.std_in  = Process.CreatePipe
-                 , Process.std_out = Process.CreatePipe
-                 , Process.std_err = Process.CreatePipe
-                 }
+    let cr = createProcPipe path args
     phvar <- newEmptyMVar
     system' phvar cr mempty
 
@@ -514,11 +510,7 @@ spawnNode (path, args, mbLogPath) = do
 
     -- printf ("Redirecting node's stdout and stderr to "%fp%"\n") logPath
     liftIO $ IO.hSetBuffering logHandle IO.LineBuffering
-    let cr = (Process.proc (toString path) (map toString args))
-                 { Process.std_in  = Process.CreatePipe
-                 , Process.std_out = Process.UseHandle logHandle
-                 , Process.std_err = Process.UseHandle logHandle
-                 }
+    let cr = createProcHandle path args logHandle
     phvar <- newEmptyMVar
     asc <- async (system' phvar cr mempty)
     mbPh <- liftIO $ timeout 10000000 (takeMVar phvar)
@@ -539,25 +531,41 @@ runWallet shouldLog (path, args, mLogPath) = do
             createDirectoryIfMissing True (directory lp)
             (_, logHandle) <- (lp,) <$> openFile lp AppendMode
             liftIO $ IO.hSetBuffering logHandle IO.LineBuffering
-            let cr = (Process.proc (toString path) (map toString args))
-                         { Process.std_in  = Process.CreatePipe
-                         , Process.std_out = Process.UseHandle logHandle
-                         , Process.std_err = Process.UseHandle logHandle
-                         }
+            let cr = createProcHandle path args logHandle
             system' phvar cr mempty
         Nothing ->
            if shouldLog then
                liftIO $ do
-               let cr = (Process.proc (toString path) (map toString args))
-                         { Process.std_in  = Process.CreatePipe
-                         , Process.std_out = Process.NoStream
-                         , Process.std_err = Process.NoStream
-                         }
+               let cr = createProcInherit path args
                system' phvar cr mempty
            else
               liftIO $ do
               (_, _, _, pid) <- runInteractiveProcess path (map toString args) Nothing Nothing
               waitForProcess pid
+
+createProcInherit :: FilePath -> [Text] -> Process.CreateProcess
+createProcInherit path args =
+    (Process.proc (toString path) (map toString args))
+        { Process.std_in = Process.CreatePipe
+        , Process.std_out = Process.Inherit
+        , Process.std_err = Process.Inherit
+        }
+
+createProcHandle :: FilePath -> [Text] -> Handle -> Process.CreateProcess
+createProcHandle path args pHandle =
+    (Process.proc (toString path) (map toString args))
+        { Process.std_in = Process.CreatePipe
+        , Process.std_out = Process.UseHandle pHandle
+        , Process.std_err = Process.UseHandle pHandle
+        }
+
+createProcPipe :: FilePath -> [Text] -> Process.CreateProcess
+createProcPipe path args =
+    (Process.proc (toString path) (map toString args))
+        { Process.std_in = Process.CreatePipe
+        , Process.std_out = Process.CreatePipe
+        , Process.std_err = Process.CreatePipe
+        }
 
 customLogger :: Log.CanLog m => LType -> NodeType -> String -> m ()
 customLogger logType logName logStr = do
@@ -619,7 +627,7 @@ system' phvar p sl = liftIO (do
             case m of
                 Just hIn -> do
                     _ <- withAsync (forever $ IO.hGetLine (fromJust stdO) >>= customLogger LInfo NNode) $ \_ ->
-                         withAsync (forever $ IO.hGetLine (fromJust stdE) >>= customLogger LInfo NNode) $ \_ -> do
+                         withAsync (forever $ IO.hGetLine (fromJust stdE) >>= customLogger LError NNode) $ \_ -> do
                          waitForProcess ph
                     IO.hSetBuffering hIn IO.LineBuffering
                 _        -> return ()
