@@ -499,11 +499,14 @@ spawnNode (path, args, mbLogPath) = do
             createDirectoryIfMissing True (directory lp)
             (lp,) <$> openFile lp AppendMode
         Nothing -> do
-            (_, stdO, stdE, pid) <- runInteractiveProcess path (map toString args) Nothing Nothing
-            _ <- withAsync (forever $ IO.hGetLine stdO >>= customLogger LInfo NNode ) $ \_ ->
-                withAsync (forever $ IO.hGetLine stdE >>= customLogger LError NNode) $ \_ -> do
-                waitForProcess pid
-            return (path, stdO)
+            let cr = createProcInherit path args
+            (_, stdO, stdE, pid) <- Process.createProcess cr
+            case stdO of
+                Just o -> do
+                    _ <- asyncLog o (fromJust stdE) pid NNode
+                    return (path, o)
+                Nothing -> do
+                    return (path, stdin)
     -- TODO (jmitchell): Find a safe, reliable way to print `logPath`. Cardano
     -- fails when it prints unicode characters. In the meantime, don't print it.
     -- See DAEF-12.
@@ -567,6 +570,13 @@ createProcPipe path args =
         , Process.std_err = Process.CreatePipe
         }
 
+asyncLog :: Handle -> Handle -> ProcessHandle -> NodeType -> IO ExitCode
+asyncLog stdO stdE pH nt = do
+    withAsync (forever $ IO.hGetLine stdO >>= customLogger LInfo nt) $ \_ ->
+        withAsync (forever $ IO.hGetLine stdE >>= customLogger LError nt) $ \_ -> do
+        waitForProcess pH
+
+
 customLogger :: Log.CanLog m => LType -> NodeType -> String -> m ()
 customLogger logType logName logStr = do
     Log.usingLoggerName (Log.LoggerName logNameStr) $
@@ -626,9 +636,7 @@ system' phvar p sl = liftIO (do
             putMVar phvar ph
             case m of
                 Just hIn -> do
-                    _ <- withAsync (forever $ IO.hGetLine (fromJust stdO) >>= customLogger LInfo NNode) $ \_ ->
-                         withAsync (forever $ IO.hGetLine (fromJust stdE) >>= customLogger LError NNode) $ \_ -> do
-                         waitForProcess ph
+                    _ <- asyncLog (fromJust stdO) (fromJust stdE) ph NNode
                     IO.hSetBuffering hIn IO.LineBuffering
                 _        -> return ()
             return (m, ph)
