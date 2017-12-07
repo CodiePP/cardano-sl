@@ -11,34 +11,34 @@ module Plugin
 import           Universum
 
 #if !(defined(mingw32_HOST_OS))
-import           System.Exit (ExitCode (ExitSuccess))
-import           System.Posix.Process (exitImmediately)
+import           System.Exit                (ExitCode (ExitSuccess))
+import           System.Posix.Process       (exitImmediately)
 #endif
-import           Data.Constraint (Dict(..))
-import           Formatting (float, int, sformat, stext, (%))
-import           Mockable (Catch, Delay, Mockable, delay)
-import           Node.Conversation (ConversationActions (..))
-import           Node.Message.Class (Message (..))
-import           Serokell.Util (sec)
-import           System.IO (hFlush, stdout)
-import           System.Wlog (CanLog, HasLoggerName, WithLogger, logDebug, logInfo)
+import           Data.Constraint            (Dict (..))
+import           Formatting                 (float, int, sformat, stext, (%))
+import           Mockable                   (Catch, Delay, Mockable, delay)
+import           Node.Conversation          (ConversationActions (..))
+import           Node.Message.Class         (Message (..))
+import           Serokell.Util              (sec)
+import           System.IO                  (hFlush, stdout)
+import           System.Wlog                (CanLog, HasLoggerName, WithLogger, logDebug, logInfo)
 
-import           Pos.Communication (Conversation (..), OutSpecs (..), SendActions (..),
-                                   WorkerSpec, delegationRelays, relayPropagateOut,
-                                   txRelays, usRelays, worker)
-import           Pos.Crypto (AHash (..), fullPublicKeyF, hashHexF)
+import           Pos.Communication          (Conversation (..), OutSpecs (..), SendActions (..),
+                                             WorkerSpec, delegationRelays, relayPropagateOut,
+                                             txRelays, usRelays, worker)
+import           Pos.Crypto                 (AHash (..), fullPublicKeyF, hashHexF)
 import           Pos.Launcher.Configuration (HasConfigurations)
-import           Pos.Txp (genesisUtxo, unGenesisUtxo)
-import           Pos.Util.CompileInfo (HasCompileInfo)
-import           Pos.Util.JsonLog (JLEvent (JLTxReceived))
-import           Pos.Util.TimeWarp (jsonLog)
-import           Pos.WorkMode (EmptyMempoolExt, RealMode, RealModeContext)
+import           Pos.Txp                    (genesisUtxo, unGenesisUtxo)
+import           Pos.Util.CompileInfo       (HasCompileInfo)
+import           Pos.Util.JsonLog           (JLEvent (JLTxReceived))
+import           Pos.Util.TimeWarp          (jsonLog)
+import           Pos.WorkMode               (EmptyMempoolExt, RealMode, RealModeContext)
 
-import           AuxxOptions (AuxxOptions (..))
-import           Command (createCommandProcs)
+import           AuxxOptions                (AuxxOptions (..))
+import           Command                    (createCommandProcs)
 import qualified Lang
-import           Mode (MonadAuxxMode)
-import           Repl (WithCommandAction (..), PrintAction)
+import           Mode                       (MonadAuxxMode)
+import           Repl                       (PrintAction, WithCommandAction (..))
 
 ----------------------------------------------------------------------------
 -- Plugin implementation

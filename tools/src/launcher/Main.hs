@@ -13,65 +13,71 @@
 
 import           Universum
 
-import           Control.Concurrent (modifyMVar_)
+import           Control.Concurrent                   (modifyMVar_)
 import           Control.Concurrent.Async.Lifted.Safe (Async, async, cancel, poll, wait, waitAny,
                                                        withAsync, withAsyncWithUnmask)
-import           Control.Exception.Safe (tryAny)
-import           Control.Lens (makeLensesWith)
-import qualified Data.ByteString.Lazy as BS.L
-import           Data.List (isSuffixOf)
-import           Data.Maybe (fromJust)
-import qualified Data.Text.IO as T
-import           Data.Time.Units (Second, convertUnit)
-import           Data.Version (showVersion)
-import           Formatting (int, sformat, shown, stext, (%))
-import qualified NeatInterpolation as Q (text)
-import           Options.Applicative (Mod, OptionFields, Parser, auto, execParser, footerDoc,
-                                      fullDesc, header, help, helper, info, infoOption, long,
-                                      metavar, option, progDesc, short, strOption, switch)
-import           System.Directory (createDirectoryIfMissing, doesFileExist, removeFile)
-import           System.Environment (getExecutablePath)
-import           System.Exit (ExitCode (..))
-import           System.FilePath ((</>))
-import qualified System.IO as IO
-import           System.Process (ProcessHandle, runInteractiveProcess,
-                                 waitForProcess)
-import qualified System.Process as Process
-import           System.Timeout (timeout)
-import           System.Wlog (logError, logInfo, logNotice, logWarning)
-import qualified System.Wlog as Log
-import           Text.PrettyPrint.ANSI.Leijen (Doc)
+import           Control.Exception.Safe               (tryAny)
+import           Control.Lens                         (makeLensesWith)
+import qualified Data.ByteString.Lazy                 as BS.L
+import           Data.List                            (isSuffixOf)
+import           Data.Maybe                           (fromJust)
+import qualified Data.Text.IO                         as T
+import           Data.Time.Units                      (Second, convertUnit)
+import           Data.Version                         (showVersion)
+import           Formatting                           (int, sformat, shown, stext, (%))
+import qualified NeatInterpolation                    as Q (text)
+import           Options.Applicative                  (Mod, OptionFields, Parser, auto, execParser,
+                                                       footerDoc, fullDesc, header, help, helper,
+                                                       info, infoOption, long, metavar, option,
+                                                       progDesc, short, strOption, switch)
+import           System.Directory                     (createDirectoryIfMissing, doesFileExist,
+                                                       removeFile)
+import           System.Environment                   (getExecutablePath)
+import           System.Exit                          (ExitCode (..))
+import           System.FilePath                      ((</>))
+import qualified System.IO                            as IO
+import           System.Process                       (ProcessHandle, waitForProcess)
+import qualified System.Process                       as Process
+import           System.Timeout                       (timeout)
+import           System.Wlog                          (logError, logInfo, logNotice, logWarning)
+import qualified System.Wlog                          as Log
+import           Text.PrettyPrint.ANSI.Leijen         (Doc)
 
 #ifdef mingw32_HOST_OS
-import qualified System.IO.Silently as Silently
+import qualified System.IO.Silently                   as Silently
 #endif
 
 #ifndef mingw32_HOST_OS
-import           System.Posix.Signals (sigKILL, signalProcess)
-import qualified System.Process.Internals as Process
+import           System.Posix.Signals                 (sigKILL, signalProcess)
+import qualified System.Process.Internals             as Process
 #endif
 
 -- Modules needed for system'
-import           Control.Exception (handle, mask_, throwIO)
-import           Foreign.C.Error (Errno (..), ePIPE)
-import           GHC.IO.Exception (IOErrorType (..), IOException (..))
+import           Control.Exception                    (handle, mask_, throwIO)
+import           Foreign.C.Error                      (Errno (..), ePIPE)
+import           GHC.IO.Exception                     (IOErrorType (..), IOException (..))
 
-import           Paths_cardano_sl (version)
-import           Pos.Client.CLI (configurationOptionsParser, readLoggerConfig)
-import           Pos.Core (HasConfiguration, Timestamp (..))
-import           Pos.DB.Block (dbGetSerBlockRealDefault, dbGetSerUndoRealDefault,
-                               dbPutSerBlundRealDefault)
-import           Pos.DB.Class (MonadDB (..), MonadDBRead (..))
-import           Pos.DB.Rocks (NodeDBs, closeNodeDBs, dbDeleteDefault, dbGetDefault,
-                               dbIterSourceDefault, dbPutDefault, dbWriteBatchDefault, openNodeDBs)
-import           Pos.Launcher (HasConfigurations, withConfigurations)
-import           Pos.Launcher.Configuration (ConfigurationOptions (..))
-import           Pos.Reporting.Methods (compressLogs, retrieveLogFiles, sendReport)
-import           Pos.ReportServer.Report (ReportType (..))
-import           Pos.Update (installerHash)
-import           Pos.Update.DB.Misc (affirmUpdateInstalled)
-import           Pos.Util (HasLens (..), directory, postfixLFields, sleep)
-import           Pos.Util.CompileInfo (HasCompileInfo, retrieveCompileTimeInfo, withCompileInfo)
+import           Paths_cardano_sl                     (version)
+import           Pos.Client.CLI                       (configurationOptionsParser, readLoggerConfig)
+import           Pos.Core                             (HasConfiguration, Timestamp (..))
+import           Pos.DB.Block                         (dbGetSerBlockRealDefault,
+                                                       dbGetSerUndoRealDefault,
+                                                       dbPutSerBlundRealDefault)
+import           Pos.DB.Class                         (MonadDB (..), MonadDBRead (..))
+import           Pos.DB.Rocks                         (NodeDBs, closeNodeDBs, dbDeleteDefault,
+                                                       dbGetDefault, dbIterSourceDefault,
+                                                       dbPutDefault, dbWriteBatchDefault,
+                                                       openNodeDBs)
+import           Pos.Launcher                         (HasConfigurations, withConfigurations)
+import           Pos.Launcher.Configuration           (ConfigurationOptions (..))
+import           Pos.Reporting.Methods                (compressLogs, retrieveLogFiles, sendReport)
+import           Pos.ReportServer.Report              (ReportType (..))
+import           Pos.Update                           (installerHash)
+import           Pos.Update.DB.Misc                   (affirmUpdateInstalled)
+import           Pos.Util                             (HasLens (..), directory, postfixLFields,
+                                                       sleep)
+import           Pos.Util.CompileInfo                 (HasCompileInfo, retrieveCompileTimeInfo,
+                                                       withCompileInfo)
 
 data LauncherOptions = LO
     { loNodePath            :: !FilePath
@@ -101,6 +107,7 @@ type M a = (HasConfigurations, HasCompileInfo) => Log.LoggerNameBox IO a
 
 data LType = LInfo | LNotice | LWarning | LError
 data NodeType = NWallet | NNode
+data ProcessType = PNoStream | PInherit | PHandle | PPipe
 
 optionsParser :: Parser LauncherOptions
 optionsParser = do
@@ -126,8 +133,7 @@ optionsParser = do
         metavar "PATH"
     loNodeLogPath <- optional $ textOption $
         long    "node-log-path" <>
-        help    ("File where node stdout/err will be redirected " <>
-                 "(def: temp file).") <>
+        help    "File where node stdout/err will be redirected " <>
         metavar "PATH"
 
     -- Wallet-related args
@@ -145,8 +151,7 @@ optionsParser = do
 
     loWalletLogPath <- optional $ textOption $
         long    "wallet-log-path" <>
-        help    ("File where wallet stdout/err will be redirected " <>
-                 "(def: temp file).") <>
+        help    "File where wallet stdout/err will be redirected " <>
         metavar "PATH"
     -- Update-related args
     loUpdaterPath <- textOption $
@@ -272,7 +277,9 @@ main =
             & Log.lcFilePrefix .~ loLauncherLogsPrefix
             & Log.lcTree %~ case loLauncherLogsPrefix of
                   Nothing ->
-                      identity
+                      -- identity
+                      set Log.ltFiles [Log.HandlerWrap "launcher" Nothing] .
+                      set Log.ltSeverity (Just Log.Debug)
                   Just _  ->
                       set Log.ltFiles [Log.HandlerWrap "launcher" Nothing] .
                       set Log.ltSeverity (Just Log.Debug)
@@ -459,9 +466,9 @@ runUpdater ndbp (path, args, runnerPath, mUpdateArchivePath) = do
 
 runUpdaterProc :: HasConfigurations => FilePath -> [Text] -> M ExitCode
 runUpdaterProc path args = liftIO $ do
-    let cr = createProcPipe path args
+    let cr = createProc PPipe path args Nothing
     phvar <- newEmptyMVar
-    system' phvar cr mempty
+    system' phvar cr mempty NWallet
 
 writeWindowsUpdaterRunner :: FilePath -> M ()
 writeWindowsUpdaterRunner runnerPath = liftIO $ do
@@ -492,30 +499,21 @@ spawnNode (path, args, mbLogPath) = do
     logNotice "Starting the node"
     -- We don't explicitly close the `logHandle` here,
     -- but this will be done when we run the `CreateProcess` built
-    -- by proc later is `system'`:
+    -- by proc later in `system'`:
     -- http://hackage.haskell.org/package/process-1.6.1.0/docs/System-Process.html#v:createProcess
-    (_, logHandle) <- liftIO $ case mbLogPath of
+    cr <- liftIO $ case mbLogPath of
         Just lp -> do
-            createDirectoryIfMissing True (directory lp)
-            (lp,) <$> openFile lp AppendMode
-        Nothing -> do
-            let cr = createProcInherit path args
-            (_, stdO, stdE, pid) <- Process.createProcess cr
-            case stdO of
-                Just o -> do
-                    _ <- asyncLog o (fromJust stdE) pid NNode
-                    return (path, o)
-                Nothing -> do
-                    return (path, stdin)
-    -- TODO (jmitchell): Find a safe, reliable way to print `logPath`. Cardano
-    -- fails when it prints unicode characters. In the meantime, don't print it.
-    -- See DAEF-12.
-
-    -- printf ("Redirecting node's stdout and stderr to "%fp%"\n") logPath
-    liftIO $ IO.hSetBuffering logHandle IO.LineBuffering
-    let cr = createProcHandle path args logHandle
+            _ <- createDirectoryIfMissing True (directory lp)
+            logHandle <- openFile lp AppendMode
+            liftIO $ IO.hSetBuffering logHandle IO.LineBuffering
+            -- TODO (jmitchell): Find a safe, reliable way to print `logPath`. Cardano
+            -- fails when it prints unicode characters. In the meantime, don't print it.
+            -- See DAEF-12.
+            -- printf ("Redirecting node's stdout and stderr to "%fp%"\n") logPath
+            return $ createProc PHandle path args (Just logHandle)
+        Nothing -> return $ createProc PInherit path args Nothing
     phvar <- newEmptyMVar
-    asc <- async (system' phvar cr mempty)
+    asc <- async (system' phvar cr mempty NNode)
     mbPh <- liftIO $ timeout 10000000 (takeMVar phvar)
     case mbPh of
         Nothing -> do
@@ -534,41 +532,44 @@ runWallet shouldLog (path, args, mLogPath) = do
             createDirectoryIfMissing True (directory lp)
             (_, logHandle) <- (lp,) <$> openFile lp AppendMode
             liftIO $ IO.hSetBuffering logHandle IO.LineBuffering
-            let cr = createProcHandle path args logHandle
-            system' phvar cr mempty
+            let cr = createProc PHandle path args (Just logHandle)
+            system' phvar cr mempty NWallet
         Nothing ->
            if shouldLog then
                liftIO $ do
-               let cr = createProcInherit path args
-               system' phvar cr mempty
+               let cr = createProc PInherit path args Nothing
+               system' phvar cr mempty NWallet
            else
-              liftIO $ do
-              (_, _, _, pid) <- runInteractiveProcess path (map toString args) Nothing Nothing
-              waitForProcess pid
+               liftIO $ do
+               let cr = createProc PNoStream path args Nothing
+               system' phvar cr mempty NWallet
 
-createProcInherit :: FilePath -> [Text] -> Process.CreateProcess
-createProcInherit path args =
-    (Process.proc (toString path) (map toString args))
-        { Process.std_in = Process.CreatePipe
-        , Process.std_out = Process.Inherit
-        , Process.std_err = Process.Inherit
-        }
-
-createProcHandle :: FilePath -> [Text] -> Handle -> Process.CreateProcess
-createProcHandle path args pHandle =
-    (Process.proc (toString path) (map toString args))
-        { Process.std_in = Process.CreatePipe
-        , Process.std_out = Process.UseHandle pHandle
-        , Process.std_err = Process.UseHandle pHandle
-        }
-
-createProcPipe :: FilePath -> [Text] -> Process.CreateProcess
-createProcPipe path args =
-    (Process.proc (toString path) (map toString args))
-        { Process.std_in = Process.CreatePipe
-        , Process.std_out = Process.CreatePipe
-        , Process.std_err = Process.CreatePipe
-        }
+createProc :: ProcessType -> FilePath -> [Text] -> (Maybe Handle) -> Process.CreateProcess
+createProc pt path args pHandle =
+    case pt of
+        PHandle -> do
+            case pHandle of
+                Just h -> (Process.proc path (map toString args))
+                    { Process.std_in = Process.CreatePipe
+                    , Process.std_out = Process.UseHandle h
+                    , Process.std_err = Process.UseHandle h
+                    }
+                Nothing -> createProc PInherit path args Nothing
+        PPipe -> (Process.proc path (map toString args))
+            { Process.std_in = Process.CreatePipe
+            , Process.std_out = Process.CreatePipe
+            , Process.std_err = Process.CreatePipe
+            }
+        PNoStream -> (Process.proc path (map toString args))
+            { Process.std_in = Process.CreatePipe
+            , Process.std_out = Process.NoStream
+            , Process.std_err = Process.NoStream
+            }
+        _ -> (Process.proc path (map toString args))
+            { Process.std_in = Process.CreatePipe
+            , Process.std_out = Process.Inherit
+            , Process.std_err = Process.Inherit
+            }
 
 asyncLog :: Handle -> Handle -> ProcessHandle -> NodeType -> IO ExitCode
 asyncLog stdO stdE pH nt = do
@@ -584,10 +585,10 @@ customLogger logType logName logStr = do
             LNotice  -> logNotice $ toText logStr
             LWarning -> logError  $ toText logStr
             LError   -> logError  $ toText logStr
-            _         -> logInfo   $ toText logStr
+            _        -> logInfo   $ toText logStr
     where
         logNameStr = case logName of
-            NNode -> "node"
+            NNode   -> "node"
             NWallet -> "wallet"
 
 ----------------------------------------------------------------------------
@@ -628,15 +629,17 @@ system'
     -- ^ Command
     -> [Text]
     -- ^ Lines of standard input
+    -> NodeType
+    -- ^ node/wallet log output
     -> io ExitCode
     -- ^ Exit code
-system' phvar p sl = liftIO (do
+system' phvar p sl nt = liftIO (do
     let open = do
             (m, stdO, stdE, ph) <- Process.createProcess p
             putMVar phvar ph
             case m of
                 Just hIn -> do
-                    _ <- asyncLog (fromJust stdO) (fromJust stdE) ph NNode
+                    _ <- asyncLog (fromJust stdO) (fromJust stdE) ph nt
                     IO.hSetBuffering hIn IO.LineBuffering
                 _        -> return ()
             return (m, ph)
